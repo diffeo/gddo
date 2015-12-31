@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: ReplicationController
+metadata:
+  name: gddo
+  labels:
+    name: gddo
+spec:
+  replicas: 1
+  selector:
+    name: gddo
+  template:
+    metadata:
+      labels:
+        name: gddo
+    spec:
+      containers:
+      - name: gddo-server
+        image: us.gcr.io/meta-internal/gddo-server:latest
+        ports:
+        - name: http
+          containerPort: 80
+        - name: https
+          containerPort: 443
+        volumeMounts:
+        - name: ssl
+          mountPath: /ssl
+        - name: data
+          mountPath: /data
+      volumes:
+        - name: ssl
+          secret:
+            secretName: gddo-ssl
+        - name: data
+          emptyDir:
+            medium: ''
