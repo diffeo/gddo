@@ -29,7 +29,12 @@ spec:
         volumeMounts:
         - name: ssl
           mountPath: /ssl
+        - name: oauth
+          mountPath: /oauth
       volumes:
         - name: ssl
           secret:
             secretName: gddo-ssl
+        - name: oauth
+          secret:
+            secretName: gddo-oauth

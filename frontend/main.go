@@ -25,6 +25,8 @@ const (
 	rastechRoot   = "/github.com/rastech"
 	rastechDomain = "rastechsoftware.com"
 
+	defaultDomain = "godoc.meta.sc"
+
 	googleDiscoveryDocURL = "https://accounts.google.com/.well-known/openid-configuration"
 
 	// Host is environment variable key for the http host
@@ -34,11 +36,14 @@ const (
 
 	certPath = "/ssl/godoc.crt"
 	keyPath  = "/ssl/godoc.key"
+
+	clientIDPath     = "/oauth/clientid"
+	clientSecretPath = "/oauth/clientsecret"
 )
 
 var (
 	clientID = func() string {
-		raw, err := ioutil.ReadFile("/oauth/clientid")
+		raw, err := ioutil.ReadFile(clientIDPath)
 		if err != nil {
 			panic("error reading in client id: " + err.Error())
 		}
@@ -46,7 +51,7 @@ var (
 	}()
 
 	clientSecret = func() string {
-		raw, err := ioutil.ReadFile("/oauth/clientsecret")
+		raw, err := ioutil.ReadFile(clientSecretPath)
 		if err != nil {
 			panic("error reading in client secret: " + err.Error())
 		}
@@ -79,11 +84,17 @@ func discoverEndpoints() {
 		log.Fatal(err)
 	}
 
+	// use a fully qualified domain name set in the environment if present, otherwise fall back on the default
+	domain := os.Getenv("FQDN")
+	if domain == "" {
+		domain = defaultDomain
+	}
+
 	config = oauth2.Config{
 		ClientID:     clientID,
 		ClientSecret: clientSecret,
 		Scopes:       []string{"openid profile email"},
-		RedirectURL:  "https://meta-godoc.ngrok.io/oauth-callback",
+		RedirectURL:  "https://" + domain + "/oauth-callback",
 		Endpoint: oauth2.Endpoint{
 			AuthURL:  info.AuthEndpoint,
 			TokenURL: info.TokenEndpoint,
