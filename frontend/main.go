@@ -25,7 +25,7 @@ const (
 	rastechRoot   = "/github.com/rastech"
 	rastechDomain = "rastechsoftware.com"
 
-	defaultDomain = "godoc.meta.sc"
+	defaultDomain = "godoc.rastechsoftware.com"
 
 	googleDiscoveryDocURL = "https://accounts.google.com/.well-known/openid-configuration"
 
