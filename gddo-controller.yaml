@@ -26,6 +26,8 @@ spec:
           mountPath: /ssl
         - name: data
           mountPath: /data
+        - name: github
+          mountPath: /github
       volumes:
         - name: ssl
           secret:
@@ -33,3 +35,6 @@ spec:
         - name: data
           emptyDir:
             medium: ''
+        - name: github
+          secret:
+            secretName: gddo-github
