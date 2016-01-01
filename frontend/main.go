@@ -2,7 +2,7 @@ package main
 
 import (
 	"crypto/rand"
-	"encoding/base64"
+	"crypto/sha256"
 	"encoding/json"
 	"io"
 	"io/ioutil"
@@ -15,11 +15,15 @@ import (
 	"time"
 
 	"github.com/google/identity-toolkit-go-client/gitkit"
+	"github.com/gorilla/securecookie"
 	"golang.org/x/net/context"
 	"golang.org/x/oauth2"
 )
 
-// see: https://developers.google.com/identity/protocols/OpenIDConnect#hd-param
+// reference:
+// https://developers.google.com/identity/protocols/OpenIDConnect
+// https://developers.google.com/identity/work/it-apps
+// https://developers.google.com/identity/sign-in/web/backend-auth
 
 const (
 	rastechRoot   = "/github.com/rastech"
@@ -63,7 +67,16 @@ var (
 	// valid issuers for oauth tokens
 	issuers = []string{"https://accounts.google.com", "accounts.google.com"}
 
-	config oauth2.Config
+	baseConfig oauth2.Config
+
+	store = func() *securecookie.SecureCookie {
+		// piggyback off of client secret to secure the cookies
+		hashKey := sha256.Sum256([]byte(clientSecret))
+		s := securecookie.New(hashKey[:], nil)
+		// no longer than a 5 minute age is allowed
+		s.MaxAge(60 * 5)
+		return s
+	}()
 )
 
 func discoverEndpoints() {
@@ -90,7 +103,7 @@ func discoverEndpoints() {
 		domain = defaultDomain
 	}
 
-	config = oauth2.Config{
+	baseConfig = oauth2.Config{
 		ClientID:     clientID,
 		ClientSecret: clientSecret,
 		Scopes:       []string{"openid profile email"},
@@ -105,8 +118,9 @@ func discoverEndpoints() {
 func main() {
 	discoverEndpoints()
 
-	http.HandleFunc("/oauth-callback", wrap(handleOAuthCallback))
-	http.HandleFunc("/", wrap(handleProxy))
+	http.HandleFunc("/authenticate", logger(handleAuthenticate))
+	http.HandleFunc("/oauth-callback", logger(handleOAuthCallback))
+	http.HandleFunc("/", logger(secure(handleProxy)))
 
 	go func() {
 		log.Println("listening for tls on", os.Getenv(TLSHost))
@@ -121,37 +135,115 @@ func main() {
 	}
 }
 
-func wrap(handler http.HandlerFunc) http.HandlerFunc {
+func logger(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		log.Printf("starting %s request to %s", r.Method, r.URL.Path)
+
 		handler(w, r)
+
 		log.Printf("completed %s request to %s in %v", r.Method, r.URL.Path, time.Now().Sub(start))
 	}
 }
 
-func initiateOAuthFlow(w http.ResponseWriter, r *http.Request) {
-	stateBytes := make([]byte, 40)
-	_, err := io.ReadFull(rand.Reader, stateBytes)
-	if err != nil {
-		log.Println("error creating state:", err)
-		http.Error(w, "error creating random state", http.StatusInternalServerError)
+func secure(handler http.HandlerFunc) http.HandlerFunc {
+	redirectToAuth := func(w http.ResponseWriter, r *http.Request, failure string) {
+		loc := url.URL{
+			Path: "/authenticate",
+		}
+		if failure != "" {
+			loc.RawQuery = url.Values{"failure": {failure}}.Encode()
+		}
+		http.Redirect(w, r, loc.String(), http.StatusSeeOther)
+	}
+
+	return func(w http.ResponseWriter, r *http.Request) {
+
+		// check authentication
+		ck, err := r.Cookie(gitkit.DefaultCookieName)
+		if err != nil {
+			log.Println("initiating authenticate after invalid token cookie:", err)
+
+			// no message necessary here, this is the standard case
+			redirectToAuth(w, r, "")
+			return
+		}
+
+		certs.LoadIfNecessary(http.DefaultTransport)
+		tok, err := gitkit.VerifyToken(ck.Value, []string{clientID}, issuers, certs)
+		if err != nil {
+			log.Println("initiating authenticate after invalid token:", err)
+
+			redirectToAuth(w, r, "The current token was invalid")
+			return
+		}
+
+		// TODO: replace this with a check of the `hd` claim pending the resolution of
+		// this issue: https://github.com/google/identity-toolkit-go-client/issues/26
+		if !strings.HasSuffix(tok.Email, rastechDomain) {
+			log.Println("user with unauthorized email attempted to access rastech content:", tok.EmailVerified, tok.Email)
+
+			http.SetCookie(w, &http.Cookie{
+				Name:   gitkit.DefaultCookieName,
+				MaxAge: -1, // clear the cookie
+			})
+			redirectToAuth(w, r, "The domain for the currently authenticated user was invalid")
+		}
+
+		handler(w, r)
+	}
+}
+
+func handleAuthenticate(w http.ResponseWriter, r *http.Request) {
+	// initiate the oauth flow when the form is submitted
+	if r.Method == "POST" {
+		stateBytes := make([]byte, 40)
+		_, err := io.ReadFull(rand.Reader, stateBytes)
+		if err != nil {
+			log.Println("error creating state:", err)
+			http.Error(w, "error creating random state", http.StatusInternalServerError)
+			return
+		}
+		state, err := store.Encode("nonce", stateBytes)
+		if err != nil {
+			log.Println("error encoding state:", err)
+			http.Error(w, "error encoding random state", http.StatusInternalServerError)
+			return
+		}
+
+		config := baseConfig
+		// config.RedirectURL = ""
+		oauthURL := config.AuthCodeURL(state, oauth2.SetAuthURLParam("hd", "rastechsoftware.com"))
+
+		http.Redirect(w, r, oauthURL, http.StatusSeeOther)
 		return
 	}
-	state := base64.URLEncoding.EncodeToString(stateBytes)
 
-	oauthURL := config.AuthCodeURL(state, oauth2.SetAuthURLParam("hd", "rastechsoftware.com"))
+	data := struct {
+		JustFailed     bool
+		FailureMessage string
+	}{}
 
-	http.Redirect(w, r, oauthURL, http.StatusSeeOther)
+	if msg := r.URL.Query().Get("failure"); msg != "" {
+		data.JustFailed = true
+		data.FailureMessage = msg
+	}
+
+	templates.Execute(w, data)
 }
 
 func handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	ctx := context.Background()
 
-	state := r.FormValue("state")
-	_ = state
+	stateVal := r.FormValue("state")
+	var state []byte
+	if err := store.Decode("nonce", stateVal, &state); err != nil {
+		log.Println("invalid state:", err)
+		http.Error(w, "invalid request state", http.StatusInternalServerError)
+		return
+	}
 
-	oauthToken, err := config.Exchange(ctx, r.FormValue("code"))
+	oauthToken, err := baseConfig.Exchange(ctx, r.FormValue("code"))
 	if err != nil {
 		log.Println("error exchanging code:", err)
 		http.Error(w, "error exchanging code", http.StatusInternalServerError)
@@ -187,31 +279,8 @@ func handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleProxy(w http.ResponseWriter, r *http.Request) {
-	// for anything belonging to us, ensure we are authenticated
-	if strings.HasPrefix(r.URL.Path, rastechRoot) {
-
-		ck, err := r.Cookie(gitkit.DefaultCookieName)
-		if err != nil {
-			log.Println("initiating login after invalid token cookie:", err)
-
-			initiateOAuthFlow(w, r)
-			return
-		}
-
-		certs.LoadIfNecessary(http.DefaultTransport)
-		tok, err := gitkit.VerifyToken(ck.Value, []string{clientID}, issuers, certs)
-		if err != nil {
-			log.Println("initiating login after invalid token:", err)
-
-			initiateOAuthFlow(w, r)
-			return
-		}
-		if !strings.HasSuffix(tok.Email, rastechDomain) {
-			log.Println("user with unauthorized email attempted to access rastech content:", tok.EmailVerified, tok.Email)
-			http.Error(w, "only users with rastechsoftware.com email addresses may access this content", http.StatusForbidden)
-			return
-		}
-
+	// for the root or anything belonging to us, proxy to our server
+	if r.URL.Path == "/" || strings.HasPrefix(r.URL.Path, rastechRoot) {
 		log.Println("proxying to our server")
 		ourProxy.ServeHTTP(w, r)
 		return
@@ -224,7 +293,12 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 var (
 	ourProxy = httputil.NewSingleHostReverseProxy(&url.URL{
 		Scheme: "http",
-		Host:   "gddo",
+		Host: func() string {
+			if h := os.Getenv("GDDO_HOST"); h != "" {
+				return h
+			}
+			return "gddo"
+		}(),
 	})
 
 	gddoProxy = httputil.NewSingleHostReverseProxy(&url.URL{
