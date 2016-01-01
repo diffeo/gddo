@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/identity-toolkit-go-client/gitkit"
 	"github.com/gorilla/securecookie"
+	"github.com/unrolled/secure"
 	"golang.org/x/net/context"
 	"golang.org/x/oauth2"
 )
@@ -77,6 +78,23 @@ var (
 		s.MaxAge(60 * 5)
 		return s
 	}()
+
+	secureMiddleware = secure.New(secure.Options{
+		AllowedHosts: []string{
+			"godoc.rastechsoftware.com",
+			"godoc.meta.sc",
+		},
+		// redirect to SSL
+		SSLRedirect: true,
+		// HTTP Strict transport security
+		STSSeconds: 15552000, // 6 months
+		// vulnerability patches
+		BrowserXssFilter:   true,
+		FrameDeny:          true,
+		ContentTypeNosniff: true,
+		// turn off ssl and host restrictions for dev
+		IsDevelopment: func() bool { return os.Getenv("DEV") != "" }(),
+	})
 )
 
 func discoverEndpoints() {
@@ -118,9 +136,9 @@ func discoverEndpoints() {
 func main() {
 	discoverEndpoints()
 
-	http.HandleFunc("/authenticate", logger(handleAuthenticate))
-	http.HandleFunc("/oauth-callback", logger(handleOAuthCallback))
-	http.HandleFunc("/", logger(secure(handleProxy)))
+	http.HandleFunc("/authenticate", std(handleAuthenticate))
+	http.HandleFunc("/oauth-callback", std(handleOAuthCallback))
+	http.HandleFunc("/", std(auth(handleProxy)))
 
 	go func() {
 		log.Println("listening for tls on", os.Getenv(TLSHost))
@@ -135,18 +153,20 @@ func main() {
 	}
 }
 
-func logger(handler http.HandlerFunc) http.HandlerFunc {
+// wrapper middleware
+
+func std(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		log.Printf("starting %s request to %s", r.Method, r.URL.Path)
 
-		handler(w, r)
+		secureMiddleware.Handler(handler).ServeHTTP(w, r)
 
 		log.Printf("completed %s request to %s in %v", r.Method, r.URL.Path, time.Now().Sub(start))
 	}
 }
 
-func secure(handler http.HandlerFunc) http.HandlerFunc {
+func auth(handler http.HandlerFunc) http.HandlerFunc {
 	redirectToAuth := func(w http.ResponseWriter, r *http.Request, failure string) {
 		loc := url.URL{
 			Path: "/authenticate",
@@ -193,6 +213,8 @@ func secure(handler http.HandlerFunc) http.HandlerFunc {
 		handler(w, r)
 	}
 }
+
+// handlers
 
 func handleAuthenticate(w http.ResponseWriter, r *http.Request) {
 	// initiate the oauth flow when the form is submitted
@@ -290,6 +312,7 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 	gddoProxy.ServeHTTP(w, r)
 }
 
+// proxies to upstream gddo servers
 var (
 	ourProxy = httputil.NewSingleHostReverseProxy(&url.URL{
 		Scheme: "http",
