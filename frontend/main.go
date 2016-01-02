@@ -171,9 +171,13 @@ func auth(handler http.HandlerFunc) http.HandlerFunc {
 		loc := url.URL{
 			Path: "/authenticate",
 		}
+
+		queryParams := url.Values{"redirect_to": {r.URL.Path}}
 		if failure != "" {
-			loc.RawQuery = url.Values{"failure": {failure}}.Encode()
+			queryParams.Add("failure", failure)
 		}
+		loc.RawQuery = queryParams.Encode()
+
 		http.Redirect(w, r, loc.String(), http.StatusSeeOther)
 	}
 
@@ -216,26 +220,33 @@ func auth(handler http.HandlerFunc) http.HandlerFunc {
 
 // handlers
 
+type stateInfo struct {
+	Nonce      []byte
+	RedirectTo string
+}
+
 func handleAuthenticate(w http.ResponseWriter, r *http.Request) {
 	// initiate the oauth flow when the form is submitted
 	if r.Method == "POST" {
 		stateBytes := make([]byte, 40)
 		_, err := io.ReadFull(rand.Reader, stateBytes)
 		if err != nil {
-			log.Println("error creating state:", err)
+			log.Println("error creating random state:", err)
 			http.Error(w, "error creating random state", http.StatusInternalServerError)
 			return
 		}
-		state, err := store.Encode("nonce", stateBytes)
+
+		state, err := store.Encode("state", &stateInfo{
+			Nonce:      stateBytes,
+			RedirectTo: r.URL.Query().Get("redirect_to"),
+		})
 		if err != nil {
 			log.Println("error encoding state:", err)
 			http.Error(w, "error encoding random state", http.StatusInternalServerError)
 			return
 		}
 
-		config := baseConfig
-		// config.RedirectURL = ""
-		oauthURL := config.AuthCodeURL(state, oauth2.SetAuthURLParam("hd", "rastechsoftware.com"))
+		oauthURL := baseConfig.AuthCodeURL(state, oauth2.SetAuthURLParam("hd", "rastechsoftware.com"))
 
 		http.Redirect(w, r, oauthURL, http.StatusSeeOther)
 		return
@@ -257,9 +268,8 @@ func handleAuthenticate(w http.ResponseWriter, r *http.Request) {
 func handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	ctx := context.Background()
 
-	stateVal := r.FormValue("state")
-	var state []byte
-	if err := store.Decode("nonce", stateVal, &state); err != nil {
+	var state stateInfo
+	if err := store.Decode("state", r.FormValue("state"), &state); err != nil {
 		log.Println("invalid state:", err)
 		http.Error(w, "invalid request state", http.StatusInternalServerError)
 		return
@@ -292,12 +302,11 @@ func handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		MaxAge: 60 * 60 * 24 * 7, // 1 week
 	})
 
-	redirect, ok := oauthToken.Extra("redirect_uri").(string)
-	if !ok {
-		redirect = "/"
+	if state.RedirectTo == "" {
+		state.RedirectTo = "/"
 	}
 
-	http.Redirect(w, r, redirect, http.StatusSeeOther)
+	http.Redirect(w, r, state.RedirectTo, http.StatusSeeOther)
 }
 
 func handleProxy(w http.ResponseWriter, r *http.Request) {
