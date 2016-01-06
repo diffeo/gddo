@@ -34,7 +34,7 @@ spec:
       volumes:
         - name: ssl
           secret:
-            secretName: gddo-ssl
+            secretName: rastechsoftware-ssl
         - name: oauth
           secret:
             secretName: gddo-oauth

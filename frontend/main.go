@@ -39,8 +39,8 @@ const (
 	// TLSHost is the environment variable name for the https host
 	TLSHost = "TLS_HOST"
 
-	certPath = "/ssl/godoc.crt"
-	keyPath  = "/ssl/godoc.key"
+	certPath = "/ssl/rastechsoftware.crt"
+	keyPath  = "/ssl/rastechsoftware.key"
 
 	clientIDPath     = "/oauth/clientid"
 	clientSecretPath = "/oauth/clientsecret"
