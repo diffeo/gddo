@@ -10,7 +10,12 @@ gcloud config set compute/zone $ZONE
 
 # create the cluster if desired
 if [[ $1 == "--create" ]]; then
-	gcloud container clusters create --enable-cloud-logging --enable-cloud-monitoring --machine-type n1-standard-4 $NAME
+	gcloud container clusters create \
+		--enable-cloud-logging \
+		--enable-cloud-monitoring \
+		--machine-type n1-standard-1 \
+		--num-nodes 1 \
+		$NAME
 fi
 
 gcloud container clusters get-credentials $NAME
